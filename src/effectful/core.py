@@ -1,34 +1,27 @@
 from dataclasses import dataclass
 import typing as t
+from toolz import curry
 
 
-@dataclass
-class Effect:
-    kind: str
-    args: tuple
-    kwargs: dict
-    default_handle: t.Callable[..., t.Awaitable] = None
-
-    def __post_init__(self):
-        if self.default_handle is None:
-            self.default_handle = self._not_implemented_handle
-
-    def _not_implemented_handle(self, *args, **kwargs):
-        raise NotImplementedError(
-            "Performed effect with no handler", self
-        )
-
-    def __await__(self):
-        return (yield self)
+GenYield = t.TypeVar("GenYield")
+GenSend = t.TypeVar("GenSend")
+GenReturn = t.TypeVar("GenReturn")
+MitmYield = t.TypeVar("MitmYield")
+MitmSend = t.TypeVar("MitmSend")
 
 
-EffectHandler = t.Callable[[Effect], t.Awaitable]
+def mitm_generator(
+    mitm: t.Callable[[GenYield], t.Generator[MitmYield, MitmSend, GenSend]],
+    gen: t.Generator[GenYield, GenSend, GenReturn]
+) -> t.Generator[MitmYield, MitmSend, GenReturn]:
+    """
+    Transforms everything 'gen' yields and takes as an input.
 
-
-def _mitm_generator(
-    mitm: t.Generator,
-    gen: t.Generator
-) -> t.Generator:
+    For every item 'gen' yields 'mitm' call initializes
+    another generator which result or exception sends back to 'gen'
+    and everything this generator yields in its place proxing through
+    resulting gen.
+    """
     send, throw = None, None
     while True:
         try:
@@ -45,28 +38,45 @@ def _mitm_generator(
                 throw = e
 
 
-class SkipHandling(Exception):
-    pass
+EffectHandle = t.Callable[..., t.Awaitable]
+
+@dataclass
+class Effect:
+    kind: str
+    args: tuple
+    kwargs: dict
+    default_handle: EffectHandle = None
+
+    def __post_init__(self):
+        if self.default_handle is None:
+            self.default_handle = self._not_implemented_handle
+
+    def _not_implemented_handle(self, *args, **kwargs):
+        raise NotImplementedError(
+            "Performed effect with no handler", self
+        )
+
+    def __await__(self):
+        handle = (yield self)
+        result = yield from handle(*self.args, **self.kwargs).__await__()
+        return result
 
 
-def handle_effectful_generator(
+EffectHandler = t.Callable[[Effect], t.Optional[EffectHandle]]
+
+
+def resolve_effects_generator(
     handler: EffectHandler,
-    gen: t.Generator,
-    shallow: bool = False
+    gen: t.Generator
 ) -> t.Generator:
     def handle_effect(mb_effect):
         if isinstance(mb_effect, Effect):
-            subgen = handler(mb_effect).__await__()
-            if not shallow:
-                subgen = _mitm_generator(handle_effect, subgen)
-            try:
-                result = yield from subgen
-                return result
-            except SkipHandling:
-                pass
+            handle = handler(mb_effect)
+            if handle is not None:
+                return handle
         return (yield mb_effect)
     
-    return _mitm_generator(handle_effect, gen)
+    return mitm_generator(handle_effect, gen)
 
 
 class _Coroutine:
@@ -79,12 +89,12 @@ class _Coroutine:
         return self.gen
 
 
-def handle_effectful_awaitable(
+def resolve_effects_awaitable(
     handler: EffectHandler, aw: t.Awaitable
 ) -> t.Awaitable:
     return _Coroutine(
-        handle_effectful_generator(handler, aw.__await__())
+        resolve_effects_generator(handler, aw.__await__())
     )
 
 
-handle_effects = handle_effectful_awaitable
+resolve_effects = curry(resolve_effects_awaitable)

@@ -1,10 +1,10 @@
 import typing as t
-from functools import partial
 from decorator import decorator
 from .core import (
-    Effect, handle_effects,
-    EffectHandler, SkipHandling
+    Effect, resolve_effects,
+    EffectHandler, EffectHandle
 )
+from toolz import curry
 
 
 _not_passed = object()
@@ -45,7 +45,7 @@ class NotSyncableAwaitable(Exception):
     pass
 
 
-def sync(aw: t.Awaitable):
+def sync_effects(aw: t.Awaitable):
     try:
         generated = aw.__await__().send(None)
     except StopIteration as result:
@@ -55,113 +55,26 @@ def sync(aw: t.Awaitable):
             "Awaitable yielded with value", generated)
 
 
-def default_handler(eff: Effect) -> t.Awaitable:
-    return eff.default_handle(*eff.args, **eff.kwargs)
+def finalize_effects(aw: t.Awaitable):
+    def defaults_handler(eff: Effect):
+        return eff.default_handle
+
+    return resolve_effects(defaults_handler, aw)
 
 
-def handle_by_default(aw: t.Awaitable) -> t.Awaitable:
-    return handle_effects(default_handler, aw)
-
-
-def mapping_to_handler(
+def _mapping_to_handler(
     handles: t.Mapping = _not_passed, /, **extra_handles
 ) -> EffectHandler:
     handles = dict(handles, **extra_handles)
     handles = {_map_kind(k): v for (k, v) in handles.items()}
     
-    async def dict_handler(eff: Effect):
-        try:
-            handle = handles[eff.kind]
-        except KeyError:
-            raise SkipHandling
-        else:
-            return await handle(*eff.args, **eff.kwargs)
+    def map_handler(eff: Effect):
+        return handles.get(eff.kind, None)
     
-    return dict_handler
+    return map_handler
 
 
-def make_const_handle(value):
-    async def const_handle(*a, **kw):
-         return value
-    return const_handle
-
-
-# TODO split into composition ctx, mapping ctx, etc
-
-class HandlerCtx:
-    def __init__(
-        self, *ctxs,
-        mapping=_not_passed,
-        handler=_not_passed,
-        handle_all=False, sync=False
-    ):
-        self._sync = sync
-        # sync flag includes handling everything not handled
-        self._handle_all = handle_all or sync
-        self.handler = None
-        self._set_mapping(mapping)
-        self._set_handler(handler)
-        self._ctxs = tuple()
-        self._set_ctx_composition(ctxs)
-
-    def _set_mapping(self, mapping):
-        if mapping is _not_passed:
-            return
-        if not isinstance(mapping, t.Mapping):
-            raise TypeError("Not a mapping", mapping)
-        self._set_handler(mapping_to_handler(mapping))
-
-    def _set_ctx_composition(self, ctxs):
-        if not ctxs:
-            return
-        # TODO atleast DRY
-        traitor = next(
-            (c for c in ctxs if not isinstance(c, self.__class__)),
-            _not_passed
-        )
-        if traitor is not _not_passed:
-            raise TypeError(
-                f"Not an instance of {self.__class__.__name__}", traitor
-            )
-
-        traitor = next(
-            (c for c in ctxs if c._sync),
-            _not_passed
-        )
-        if traitor is not _not_passed:
-            raise TypeError(
-                f"Synchronous ctx cant participate in composition", traitor
-            )
-
-        self._ctxs = ctxs
-
-    
-    def _set_handler(self, handler):
-        if handler is _not_passed:
-            return
-
-        if not isinstance(handler, t.Callable):
-            raise TypeError("Handler is not a callable", handler)
-        
-        if self.handler is not None:
-            raise TypeError(
-                "Too many arguments to deduce handler. "
-            )
-
-        self.handler = handler
-
-    def __call__(self, aw: t.Awaitable):
-        res = aw
-        if self.handler is not None:
-            res = handle_effects(self.handler, res)
-        for c in reversed(self._ctxs):
-            res = c(res)
-        if self._handle_all:
-            res = handle_by_default(res)
-        if self._sync:
-            res = sync(res)
-        return res
-
-    def run(self, f, *args, **kwargs):
-        return self(f(*args, **kwargs))
+@curry
+def map_effects(mapping: t.Mapping, aw: t.Awaitable):
+    return resolve_effects(_mapping_to_handler(mapping), aw)
 

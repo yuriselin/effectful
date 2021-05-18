@@ -1,9 +1,11 @@
-
-from functools import partial
 from effectful import (
     Effect, effect, 
-    make_const_handle,
-    HandlerCtx
+    resolve_effects,
+    map_effects,
+    finalize_effects,
+    sync_effects,
+    compose,
+    handles
 )
 
 
@@ -16,13 +18,18 @@ async def scenario():
     return (await answer()) * 2
 
 
-ctx = HandlerCtx(sync=True)
-assert ctx(answer()) == 21
-assert ctx(scenario()) == 42
+ctx1 = compose(sync_effects, finalize_effects)
 
-ctx2 = HandlerCtx(HandlerCtx(mapping={
-    answer: make_const_handle(44)
-}), sync=True)
+assert ctx1(answer()) == 21
+assert ctx1(scenario()) == 42
+
+ctx2 = compose(
+    sync_effects,
+    finalize_effects,
+    map_effects({
+        answer: handles.const(44)
+    })
+)
 assert ctx2(scenario()) == 88
 
 
@@ -30,9 +37,5 @@ assert ctx2(scenario()) == 88
 async def foo(x):
     return x + (await answer())
 
-assert ctx(foo(10)) == 31
+assert ctx2(foo(10)) == 54
 
-ctx2 = HandlerCtx(HandlerCtx(mapping={
-    answer: make_const_handle(44)
-}), sync=True)
-# performer_x = compose(performer, partial(handle_effects, answer_handler))
