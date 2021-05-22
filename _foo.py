@@ -37,5 +37,24 @@ assert ctx2(scenario()) == 88
 async def foo(x):
     return x + (await answer())
 
+
 assert ctx2(foo(10)) == 54
 
+
+@effect
+async def kek():
+    x = await answer()
+    return await foo(x)
+
+ctx3 = compose(
+    sync_effects,
+    finalize_effects,
+    map_effects({
+        "bar": {
+            answer: handles.const(2)
+        },
+        answer: handles.const(40)
+    })
+)
+
+assert ctx3(kek()) == 42

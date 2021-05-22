@@ -62,19 +62,33 @@ def finalize_effects(aw: t.Awaitable):
     return resolve_effects(defaults_handler, aw)
 
 
-def _mapping_to_handler(
-    handles: t.Mapping = _not_passed, /, **extra_handles
-) -> EffectHandler:
-    handles = dict(handles, **extra_handles)
-    handles = {_map_kind(k): v for (k, v) in handles.items()}
-    
-    def map_handler(eff: Effect):
-        return handles.get(eff.kind, None)
-    
-    return map_handler
-
-
 @curry
 def map_effects(mapping: t.Mapping, aw: t.Awaitable):
-    return resolve_effects(_mapping_to_handler(mapping), aw)
+    mapping = {_map_kind(k): v for (k, v) in mapping.items()}
+    
+    def mapping_handler(eff: Effect):
+        handle = mapping.get(eff.kind, None)
+
+        if handle is None:
+            return handle
+
+        is_callable = isinstance(handle, t.Callable)
+        is_mapping = isinstance(handle, t.Mapping)
+
+        if is_mapping and is_callable:
+            raise ValueError(
+                "Expected either mapping or callable but "
+                "got value implementing both", handle)
+        
+        if is_mapping:
+            return lambda *a, **kw: map_effects(handle, eff.default_handle(*a, **kw))
+
+        if is_callable:
+            return handle
+
+        raise ValueError(
+            f"Handler mapping should contain either "
+            f"another mapping or callable, got {handle}")
+
+    return resolve_effects(mapping_handler, aw)
 

@@ -61,6 +61,9 @@ class Effect:
         result = yield from handle(*self.args, **self.kwargs).__await__()
         return result
 
+    def call_default(self):
+        return self.default_handle(*self.args, **self.kwargs)
+
 
 EffectHandler = t.Callable[[Effect], t.Optional[EffectHandle]]
 
